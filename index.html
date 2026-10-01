@@ -11,6 +11,8 @@
   .card{background:var(--card);border-radius:14px;padding:28px;width:min(440px,94vw)}
   h1{margin:0 0 6px;font-size:1.5rem} p{color:var(--muted);margin:0 0 18px}
   input{width:100%;padding:12px;border-radius:8px;border:1px solid #2b3a4a;background:#0f1720;color:var(--text);font-size:1rem;margin-bottom:12px}
+  label{display:block;font-size:.85rem;color:var(--muted);margin:0 0 4px}
+  select{width:100%;padding:11px;border-radius:8px;border:1px solid #2b3a4a;background:#0f1720;color:var(--text);font-size:.95rem;margin-bottom:12px}
   button{padding:12px 16px;border:0;border-radius:8px;font-size:1rem;cursor:pointer;color:#fff;background:var(--accent)}
   button.full{width:100%} button.red{background:var(--red)} button.gray{background:#2b3a4a}
   .err{color:var(--red);min-height:1.2em;margin:8px 0 0;font-size:.9rem}
@@ -28,6 +30,10 @@
   <h1>Umeå Kommun Roblox VC</h1>
   <p>Enter your Roblox ID to join the voice chat.</p>
   <input id="rid" inputmode="numeric" placeholder="Roblox ID (numbers only)" autocomplete="off">
+  <label for="micSel">Microphone</label>
+  <select id="micSel"></select>
+  <label for="outSel">Speakers / headphones</label>
+  <select id="outSel"></select>
   <button class="full" id="joinBtn">Join voice chat</button>
   <div class="err" id="err"></div>
 </div>
@@ -49,7 +55,7 @@ const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 let ws, stream, me, members = {}, pcs = {};
 
 $('joinBtn').onclick = join;
-$('rid').onkeydown = e => e.key === 'Enter' && join();
+$('rid').onkeydown = e => { if (e.key === 'Enter') join(); };
 $('leaveBtn').onclick = () => location.reload();
 $('muteBtn').onclick = () => {
   const t = stream.getAudioTracks()[0]; t.enabled = !t.enabled;
@@ -61,7 +67,8 @@ async function join() {
   $('err').textContent = '';
   if (!/^\d{1,12}$/.test(id)) return $('err').textContent = 'Please enter a valid Roblox ID (numbers only).';
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    const mic = $('micSel').value;
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: mic ? { exact: mic } : undefined, echoCancellation: true, noiseSuppression: true } });
   } catch { return $('err').textContent = 'Microphone access is needed to join.'; }
   $('joinBtn').disabled = true;
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
@@ -89,6 +96,21 @@ async function join() {
   };
 }
 
+function fillSel(sel, list) {
+  sel.innerHTML = '';
+  list.forEach((d, i) => { const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label || ('Device ' + (i + 1)); sel.appendChild(o); });
+}
+async function loadDevices() {
+  try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach(t => t.stop()); }
+  catch { $('err').textContent = 'Allow microphone access so you can pick your devices.'; }
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  fillSel($('micSel'), devs.filter(d => d.kind === 'audioinput'));
+  const outs = devs.filter(d => d.kind === 'audiooutput');
+  if (outs.length && 'setSinkId' in HTMLMediaElement.prototype) fillSel($('outSel'), outs);
+  else { $('outSel').innerHTML = '<option value="">Default (this browser can\'t switch)</option>'; $('outSel').disabled = true; }
+}
+loadDevices();
+
 function peer(pid) {
   if (pcs[pid]) return pcs[pid];
   const pc = new RTCPeerConnection(ICE);
@@ -99,6 +121,7 @@ function peer(pid) {
     let a = $('a' + pid);
     if (!a) { a = document.createElement('audio'); a.id = 'a' + pid; a.autoplay = true; $('audios').appendChild(a); }
     a.srcObject = e.streams[0];
+    if ($('outSel').value && a.setSinkId) a.setSinkId($('outSel').value).catch(() => {});
     watchSpeaking(pid, e.streams[0]);
   };
   return pc;
