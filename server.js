@@ -23,7 +23,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(info ? 200 : 404, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify(info || {}));
   }
-  fs.readFile(path.join(__dirname, 'public', 'index.html'), (e, d) => {
+     fs.readFile(path.join(__dirname, 'index.html'), (e, d) => {
     res.writeHead(e ? 500 : 200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(d);
   });
