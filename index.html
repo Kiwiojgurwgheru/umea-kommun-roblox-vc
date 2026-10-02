@@ -11,18 +11,19 @@
   .card{background:var(--card);border-radius:14px;padding:28px;width:min(440px,94vw)}
   h1{margin:0 0 6px;font-size:1.5rem} p{color:var(--muted);margin:0 0 18px}
   input{width:100%;padding:12px;border-radius:8px;border:1px solid #2b3a4a;background:#0f1720;color:var(--text);font-size:1rem;margin-bottom:12px}
-  label{display:block;font-size:.85rem;color:var(--muted);margin:0 0 4px}
-  select{width:100%;padding:11px;border-radius:8px;border:1px solid #2b3a4a;background:#0f1720;color:var(--text);font-size:.95rem;margin-bottom:12px}
   button{padding:12px 16px;border:0;border-radius:8px;font-size:1rem;cursor:pointer;color:#fff;background:var(--accent)}
   button.full{width:100%} button.red{background:var(--red)} button.gray{background:#2b3a4a}
   .err{color:var(--red);min-height:1.2em;margin:8px 0 0;font-size:.9rem}
+  .note{margin-top:12px;padding:12px;border-radius:8px;background:#0f1720;border:1px solid #2b3a4a;font-size:.9rem;line-height:1.5}
+  .note b{display:block;margin:6px 0;font-size:1.4rem;letter-spacing:.12em;color:#fff}
   .hidden{display:none}
   .bar{display:flex;gap:10px;margin-bottom:16px}.bar button{flex:1}
   ul{list-style:none;margin:0;padding:0}
-  li{display:flex;align-items:center;gap:12px;padding:10px;border-radius:8px;background:#0f1720;margin-bottom:8px}
+  li{display:flex;align-items:center;gap:12px;padding:10px;border-radius:8px;background:#0f1720;margin-bottom:8px;transition:opacity .3s}
   li img{width:40px;height:40px;border-radius:50%;background:#2b3a4a}
   li small{color:var(--muted);display:block}
   li.speaking{outline:2px solid #3ecf8e}
+  li.far{opacity:.45}
 </style>
 </head>
 <body>
@@ -30,12 +31,9 @@
   <h1>Umeå Kommun Roblox VC</h1>
   <p>Enter your Roblox ID to join the voice chat.</p>
   <input id="rid" inputmode="numeric" placeholder="Roblox ID (numbers only)" autocomplete="off">
-  <label for="micSel">Microphone</label>
-  <select id="micSel"></select>
-  <label for="outSel">Speakers / headphones</label>
-  <select id="outSel"></select>
   <button class="full" id="joinBtn">Join voice chat</button>
   <div class="err" id="err"></div>
+  <div class="note hidden" id="note"></div>
 </div>
 
 <div class="card hidden" id="room">
@@ -52,64 +50,76 @@
 <script>
 const $ = id => document.getElementById(id);
 const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-let ws, stream, me, members = {}, pcs = {};
+// me/members: voice-room roster. pcs: one WebRTC connection per *nearby* player (server decides who).
+// nodes: per-peer Web Audio chain (source -> gain). prox: gain per peer, computed by the SERVER from Roblox positions.
+let ws, stream, ctx, me, inGame = false, members = {}, pcs = {}, nodes = {}, queued = {}, prox = {};
 
 $('joinBtn').onclick = join;
-$('rid').onkeydown = e => { if (e.key === 'Enter') join(); };
+$('rid').onkeydown = e => e.key === 'Enter' && join();
 $('leaveBtn').onclick = () => location.reload();
 $('muteBtn').onclick = () => {
   const t = stream.getAudioTracks()[0]; t.enabled = !t.enabled;
   $('muteBtn').textContent = t.enabled ? 'Mute' : 'Unmute';
 };
 
+function showNote(code, ttl) {
+  const n = $('note'); n.textContent = '';
+  const b = document.createElement('b'); b.textContent = '/vc ' + code;
+  n.append('One more step to confirm it\'s really you: open the Roblox game and type this in the chat:', b,
+    'The code is valid for ' + Math.round(ttl / 60) + ' minutes.');
+  n.classList.remove('hidden');
+}
+function resetLogin(msg) {
+  $('err').textContent = msg || '';
+  $('note').classList.add('hidden');
+  $('joinBtn').disabled = false;
+  stream && stream.getTracks().forEach(t => t.stop());
+}
+
 async function join() {
   const id = $('rid').value.trim();
   $('err').textContent = '';
   if (!/^\d{1,12}$/.test(id)) return $('err').textContent = 'Please enter a valid Roblox ID (numbers only).';
+  ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+  ctx.resume().catch(() => {});
   try {
-    const mic = $('micSel').value;
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: mic ? { exact: mic } : undefined, echoCancellation: true, noiseSuppression: true } });
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
   } catch { return $('err').textContent = 'Microphone access is needed to join.'; }
   $('joinBtn').disabled = true;
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
   ws.onopen = () => ws.send(JSON.stringify({ type: 'join', id }));
-  ws.onclose = () => { if (me) location.reload(); };
+  ws.onclose = () => { if (me) location.reload(); else if ($('joinBtn').disabled) resetLogin('Connection lost. Please try again.'); };
   ws.onmessage = async e => {
     const m = JSON.parse(e.data);
-    if (m.type === 'error') { $('err').textContent = m.msg; $('joinBtn').disabled = false; stream.getTracks().forEach(t => t.stop()); me = null; ws.close(); }
+    if (m.type === 'error') { resetLogin(m.msg); me = null; ws.close(); }
+    else if (m.type === 'verify') showNote(m.code, m.ttl);
     else if (m.type === 'welcome') {
       me = m.me; $('login').classList.add('hidden'); $('room').classList.remove('hidden');
       members[me.pid] = me;
-      for (const p of m.peers) { members[p.pid] = p; await call(p.pid); }
+      for (const p of m.peers) members[p.pid] = p;
       render();
     }
     else if (m.type === 'joined') { members[m.peer.pid] = m.peer; render(); }
-    else if (m.type === 'left') { delete members[m.pid]; pcs[m.pid]?.close(); delete pcs[m.pid]; $('a' + m.pid)?.remove(); render(); }
+    else if (m.type === 'left') { delete members[m.pid]; closePeer(m.pid); render(); }
+    // The server tells us who is close enough to connect to; far away players are never connected at all.
+    else if (m.type === 'connect') { closePeer(m.pid); if (m.initiator) await call(m.pid); else peer(m.pid); }
+    else if (m.type === 'disconnect') closePeer(m.pid);
+    else if (m.type === 'prox') {
+      prox = m.peers || {}; inGame = !!m.inGame;
+      for (const pid in nodes) applyGain(pid);
+      refresh();
+    }
     else if (m.type === 'offer') {
       const pc = peer(m.from);
       await pc.setRemoteDescription(m.sdp);
+      await flushIce(m.from);
       const answer = await pc.createAnswer(); await pc.setLocalDescription(answer);
       ws.send(JSON.stringify({ type: 'answer', to: m.from, sdp: pc.localDescription }));
     }
-    else if (m.type === 'answer') await pcs[m.from]?.setRemoteDescription(m.sdp);
-    else if (m.type === 'ice') try { await pcs[m.from]?.addIceCandidate(m.candidate); } catch {}
+    else if (m.type === 'answer') { await pcs[m.from]?.setRemoteDescription(m.sdp); await flushIce(m.from); }
+    else if (m.type === 'ice') await addIce(m.from, m.candidate);
   };
 }
-
-function fillSel(sel, list) {
-  sel.innerHTML = '';
-  list.forEach((d, i) => { const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label || ('Device ' + (i + 1)); sel.appendChild(o); });
-}
-async function loadDevices() {
-  try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach(t => t.stop()); }
-  catch { $('err').textContent = 'Allow microphone access so you can pick your devices.'; }
-  const devs = await navigator.mediaDevices.enumerateDevices();
-  fillSel($('micSel'), devs.filter(d => d.kind === 'audioinput'));
-  const outs = devs.filter(d => d.kind === 'audiooutput');
-  if (outs.length && 'setSinkId' in HTMLMediaElement.prototype) fillSel($('outSel'), outs);
-  else { $('outSel').innerHTML = '<option value="">Default (this browser can\'t switch)</option>'; $('outSel').disabled = true; }
-}
-loadDevices();
 
 function peer(pid) {
   if (pcs[pid]) return pcs[pid];
@@ -118,11 +128,17 @@ function peer(pid) {
   stream.getTracks().forEach(t => pc.addTrack(t, stream));
   pc.onicecandidate = e => e.candidate && ws.send(JSON.stringify({ type: 'ice', to: pid, candidate: e.candidate }));
   pc.ontrack = e => {
-    let a = $('a' + pid);
-    if (!a) { a = document.createElement('audio'); a.id = 'a' + pid; a.autoplay = true; $('audios').appendChild(a); }
-    a.srcObject = e.streams[0];
-    if ($('outSel').value && a.setSinkId) a.setSinkId($('outSel').value).catch(() => {});
-    watchSpeaking(pid, e.streams[0]);
+    const s = e.streams[0];
+    teardownAudio(pid);
+    // Chromium only delivers remote WebRTC audio to Web Audio if the stream is also attached to a media element.
+    // The element is muted - the audible path is source -> per-peer GainNode -> speakers.
+    const a = document.createElement('audio'); a.id = 'a' + pid; a.autoplay = true; a.muted = true; a.srcObject = s;
+    $('audios').appendChild(a);
+    const src = ctx.createMediaStreamSource(s);
+    const gain = ctx.createGain(); gain.gain.value = 0;   // silent until the server says this player is audible
+    src.connect(gain); gain.connect(ctx.destination);
+    nodes[pid] = { src, gain, timer: watchSpeaking(pid, src) };
+    applyGain(pid);
   };
   return pc;
 }
@@ -133,21 +149,58 @@ async function call(pid) {
   ws.send(JSON.stringify({ type: 'offer', to: pid, sdp: pc.localDescription }));
 }
 
-function watchSpeaking(pid, s) {
-  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+// ICE candidates can arrive before the remote description is set - queue them instead of dropping them.
+async function addIce(pid, c) {
+  const pc = pcs[pid]; if (!pc || !c) return;
+  if (!pc.remoteDescription) { (queued[pid] ||= []).push(c); return; }
+  try { await pc.addIceCandidate(c); } catch {}
+}
+async function flushIce(pid) {
+  const q = queued[pid] || []; queued[pid] = [];
+  for (const c of q) try { await pcs[pid]?.addIceCandidate(c); } catch {}
+}
+
+function teardownAudio(pid) {
+  const n = nodes[pid];
+  if (n) { clearInterval(n.timer); try { n.src.disconnect(); n.gain.disconnect(); } catch {} delete nodes[pid]; }
+  $('a' + pid)?.remove();
+  $('m' + pid)?.classList.remove('speaking');
+}
+function closePeer(pid) {
+  teardownAudio(pid);
+  pcs[pid]?.close(); delete pcs[pid]; delete queued[pid];
+}
+
+// Per-player volume. 0 means exactly silent (hard ramp to 0), anything else eases to the target to avoid clicks.
+function applyGain(pid) {
+  const n = nodes[pid]; if (!n) return;
+  const g = Math.min(1, Math.max(0, Number(prox[pid]) || 0));
+  const p = n.gain.gain, t = ctx.currentTime;
+  p.cancelScheduledValues(t);
+  if (g === 0) { p.setValueAtTime(p.value, t); p.linearRampToValueAtTime(0, t + 0.08); }
+  else p.setTargetAtTime(g, t, 0.08);
+}
+
+function watchSpeaking(pid, src) {
   const an = ctx.createAnalyser(); an.fftSize = 512;
-  ctx.createMediaStreamSource(s).connect(an);
+  src.connect(an);
   const buf = new Uint8Array(an.frequencyBinCount);
-  setInterval(() => {
+  return setInterval(() => {
     an.getByteTimeDomainData(buf);
-    const loud = buf.some(v => Math.abs(v - 128) > 12);
+    const loud = buf.some(v => Math.abs(v - 128) > 12) && prox[pid] > 0.02;
     $('m' + pid)?.classList.toggle('speaking', loud);
   }, 150);
 }
 
+function refresh() {
+  if (!me) return;
+  const n = Object.keys(members).length;
+  $('count').textContent = n + (n === 1 ? ' person' : ' people') + ' in voice chat' + (inGame ? '' : ' · join the Roblox game to talk');
+  for (const pid in members) $('m' + pid)?.classList.toggle('far', pid !== me.pid && !(prox[pid] > 0));
+}
+
 function render() {
   const all = Object.values(members);
-  $('count').textContent = all.length + (all.length === 1 ? ' person' : ' people') + ' in voice chat';
   $('list').innerHTML = '';
   for (const p of all) {
     const li = document.createElement('li'); li.id = 'm' + p.pid;
@@ -157,6 +210,7 @@ function render() {
     const sub = document.createElement('small'); sub.textContent = '@' + p.name + ' · ' + p.robloxId + (p.pid === me.pid ? ' (you)' : '');
     d.append(name, sub); li.append(img, d); $('list').appendChild(li);
   }
+  refresh();
 }
 </script>
 </body>
