@@ -181,7 +181,10 @@ function handleVerify(b) {
   if (!JOB_RE.test(jobId) || !uid || !/^\d{6}$/.test(code)) return [400, { ok: false, error: 'bad request' }];
   const p = pending.get(code);
   // Same answer for "no such code" and "code belongs to someone else"
-  if (!p || p.exp < Date.now() || p.robloxId !== uid || p.ws.readyState !== 1) return [200, { ok: false, error: 'invalid_or_expired' }];
+if (!p) return [200, { ok: false, error: 'no_such_code' }];
+if (p.exp < Date.now()) return [200, { ok: false, error: 'expired' }];
+if (p.robloxId !== uid) return [200, { ok: false, error: 'wrong_account ' + uid + ' vs ' + p.robloxId }];
+if (p.ws.readyState !== 1) return [200, { ok: false, error: 'website_tab_disconnected' }];
   if (peers.size >= MAX_USERS) { send(p.ws, { type: 'error', msg: 'The room is full.' }); pending.delete(code); p.ws.pendingCode = null; return [200, { ok: false, error: 'room_full' }]; }
   // The game server just told us this user is in this server -> proof the player is active
   if (where.get(uid) !== jobId) markPresent(jobId, uid);
