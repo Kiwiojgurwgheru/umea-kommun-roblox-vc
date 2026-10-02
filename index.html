@@ -55,7 +55,7 @@ const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 let ws, stream, ctx, me, inGame = false, members = {}, pcs = {}, nodes = {}, queued = {}, prox = {};
 
 $('joinBtn').onclick = join;
-$('rid').onkeydown = e => e.key === 'Enter' && join();
+$('rid').onkeydown = e => { if (e.key === 'Enter') join(); };
 $('leaveBtn').onclick = () => location.reload();
 $('muteBtn').onclick = () => {
   const t = stream.getAudioTracks()[0]; t.enabled = !t.enabled;
