@@ -2,7 +2,7 @@ const http = require('http'), fs = require('fs'), path = require('path'), crypto
 const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
-const MAX_USERS = 12;
+const MAX_USERS = Number(process.env.MAX_USERS) || 50;
 
 /* ------------------------------------------------------------------ config */
 const envNum = (name, def) => {
